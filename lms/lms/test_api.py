@@ -11,6 +11,7 @@ from lms.lms.api import (
 	get_course_assessment_progress,
 	import_course_from_zip,
 )
+from lms.lms.course_import_export import sanitize_string
 from lms.lms.test_helpers import BaseTestUtils
 
 
@@ -163,3 +164,15 @@ class TestLMSAPI(BaseTestUtils):
 		)
 		if imported_assessment:
 			self.cleanup_items.append((doctype, imported_assessment))
+
+	def test_sanitize_string_filename_behavior(self):
+		result = sanitize_string(
+			"my file@name!.txt", allow_spaces=False, replacement_char="_", escape_html_content=False
+		)
+		self.assertEqual(result, "my_file_name_.txt")
+
+	def test_sanitize_string_name_field_behavior(self):
+		result = sanitize_string(
+			"John#Doe$", allow_spaces=True, max_length=50, replacement_char=None, escape_html_content=True
+		)
+		self.assertEqual(result, "JohnDoe")

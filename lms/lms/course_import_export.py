@@ -13,6 +13,8 @@ from frappe import _
 from frappe.utils import escape_html, validate_email_address
 from frappe.utils.file_manager import is_safe_path
 
+from lms.lms.utils import create_user as create_lms_user
+
 
 def export_course_zip(course_name):
 	course = frappe.get_doc("LMS Course", course_name)
@@ -218,7 +220,7 @@ def write_chapters_json(zip_file, chapters):
 	for chapter in chapters:
 		chapter_data = chapter.as_dict()
 		chapter_json = frappe_json_dumps(chapter_data)
-		safe_name = sanitize_filename(chapter.name)
+		safe_name = sanitize_string(chapter.name)
 		zip_file.writestr(f"chapters/{safe_name}.json", chapter_json)
 
 
@@ -226,25 +228,25 @@ def write_lessons_json(zip_file, lessons):
 	for lesson in lessons:
 		lesson_data = lesson.as_dict()
 		lesson_json = frappe_json_dumps(lesson_data)
-		safe_name = sanitize_filename(lesson.name)
+		safe_name = sanitize_string(lesson.name)
 		zip_file.writestr(f"lessons/{safe_name}.json", lesson_json)
 
 
 def write_assessments_json(zip_file, assessments, questions, test_cases):
 	for question in questions:
 		question_json = frappe_json_dumps(question)
-		safe_name = sanitize_filename(question["name"])
+		safe_name = sanitize_string(question["name"])
 		zip_file.writestr(f"assessments/questions/{safe_name}.json", question_json)
 
 	for test_case in test_cases:
 		test_case_json = frappe_json_dumps(test_case)
-		safe_name = sanitize_filename(test_case["name"])
+		safe_name = sanitize_string(test_case["name"])
 		zip_file.writestr(f"assessments/test_cases/{safe_name}.json", test_case_json)
 
 	for assessment in assessments:
 		assessment_json = frappe_json_dumps(assessment)
 		safe_doctype = assessment["doctype"].lower()
-		safe_name = sanitize_filename(assessment["name"])
+		safe_name = sanitize_string(assessment["name"])
 		zip_file.writestr(f"assessments/{safe_doctype}_{safe_name}.json", assessment_json)
 
 
@@ -257,7 +259,7 @@ def write_assets(zip_file, assets):
 		file_doc = frappe.get_doc("File", {"file_url": asset})
 		file_path = os.path.abspath(file_doc.get_full_path())
 
-		safe_filename = sanitize_filename(os.path.basename(asset))
+		safe_filename = sanitize_string(os.path.basename(asset))
 		zip_file.write(file_path, f"assets/{safe_filename}")
 
 
@@ -283,7 +285,7 @@ def serve_zip(final_path, zip_filename):
 	if not os.path.exists(final_path) or not os.path.isfile(final_path):
 		frappe.throw(_("File not found"))
 
-	safe_filename = sanitize_filename(zip_filename)
+	safe_filename = sanitize_string(zip_filename)
 
 	try:
 		with open(final_path, "rb") as f:
@@ -365,13 +367,52 @@ def create_user_for_instructors(zip_file):
 			create_user(instructor)
 
 
-def sanitize_name_field(value, max_length=50):
+def sanitize_string(
+	value,
+	allow_spaces=True,
+	max_length=None,
+	replacement_char=None,
+	escape_html_content=True,
+	strip_whitespace=True,
+):
+	"""
+	Unified function to sanitize strings for various use cases.
+
+	Args:
+		value: String to sanitize
+		allow_spaces: Whether to allow spaces in the output (True for names, False for filenames)
+		max_length: Maximum length to truncate to (None for no limit)
+		replacement_char: Character to replace invalid chars with (None to remove them)
+		escape_html_content: Whether to escape HTML entities
+		strip_whitespace: Whether to strip leading/trailing whitespace
+
+	Returns:
+		Sanitized string
+	"""
 	if not value:
 		return value
-	value = escape_html(value.strip()[:max_length])
-	name_pattern = re.compile(r"^[a-zA-Z0-9\s\-\.]+$")
-	if not name_pattern.match(value):
-		value = re.sub(r"[^a-zA-Z0-9\s\-\.]", "", value)
+
+	if strip_whitespace:
+		value = value.strip()
+	if max_length:
+		value = value[:max_length]
+
+	if escape_html_content:
+		value = escape_html(value)
+
+	if allow_spaces:
+		invalid_pattern = r"[^a-zA-Z0-9\s\-\.]"
+		valid_pattern = r"^[a-zA-Z0-9\s\-\.]+$"
+	else:
+		invalid_pattern = r"[^a-zA-Z0-9_\-\.]"
+		valid_pattern = r"^[a-zA-Z0-9_\-\.]+$"
+
+	if replacement_char is None:
+		if not re.match(valid_pattern, value):
+			value = re.sub(invalid_pattern, "", value)
+	else:
+		value = re.sub(invalid_pattern, replacement_char, value)
+
 	return value
 
 
@@ -381,9 +422,9 @@ def validate_user_email(user):
 
 
 def get_user_names(user):
-	first_name = sanitize_name_field(user.get("first_name", ""), 50)
-	last_name = sanitize_name_field(user.get("last_name", ""), 50)
-	full_name = sanitize_name_field(user.get("full_name", ""), 100)
+	first_name = sanitize_string(user.get("first_name", ""), max_length=50)
+	last_name = sanitize_string(user.get("last_name", ""), max_length=50)
+	full_name = sanitize_string(user.get("full_name", ""), max_length=100)
 	parts = full_name.split() if full_name else []
 	return (
 		first_name or (parts[0] if parts else "Imported"),
@@ -393,17 +434,18 @@ def get_user_names(user):
 
 
 def create_user(user):
-	validate_user_email(user)
 	first_name, last_name, full_name = get_user_names(user)
-	user_doc = frappe.new_doc("User")
-	user_doc.email = user["email"].strip().lower()
-	user_doc.first_name = first_name
-	user_doc.last_name = last_name
-	user_doc.full_name = full_name or f"{first_name} {last_name}".strip()
-	user_doc.send_welcome_email = False
-	user_doc.user_image = user.get("user_image")
-	user_doc.insert()
-	user_doc.add_roles("Course Creator")
+	user_doc = create_lms_user(
+		email=user["email"],
+		first_name=first_name,
+		last_name=last_name,
+		full_name=full_name,
+		user_image=user.get("user_image"),
+		roles=["Course Creator"],
+		check_existing=False,
+		validate_email=True,
+	)
+	return user_doc
 
 
 def create_evaluator(zip_file):
@@ -721,10 +763,6 @@ def add_chapter_to_course(course_doc, chapter_docs):
 def save_course_structure(zip_file, course_doc, chapter_docs):
 	add_chapter_to_course(course_doc, chapter_docs)
 	add_lessons_to_chapters(zip_file, course_doc.name, chapter_docs)
-
-
-def sanitize_filename(filename):
-	return re.sub(r"[^a-zA-Z0-9_\-\.]", "_", filename)
 
 
 def validate_zip_file(zip_file_path):
