@@ -244,15 +244,16 @@ def write_assessments_json(zip_file, assessments, questions, test_cases):
 
 	for assessment in assessments:
 		assessment_json = frappe_json_dumps(assessment)
-		safe_doctype = assessment["doctype"].lower()
-		safe_name = sanitize_string(assessment["name"])
-		zip_file.writestr(f"assessments/{safe_doctype}_{safe_name}.json", assessment_json)
+		doctype = "_".join(assessment["doctype"].lower().split(" "))
+		safe_name = "_".join(sanitize_string(assessment["name"]).split(" "))
+		zip_file.writestr(f"assessments/{doctype}_{safe_name}.json", assessment_json)
 
 
 def write_assets(zip_file, assets):
 	assets = list(set(assets))
 	for asset in assets:
-		if not asset or not isinstance(asset, str) or not is_safe_path(asset):
+		real_path = frappe.get_site_path(asset.lstrip("/"))
+		if not asset or not isinstance(asset, str) or not is_safe_path(real_path):
 			continue
 
 		file_doc = frappe.get_doc("File", {"file_url": asset})
